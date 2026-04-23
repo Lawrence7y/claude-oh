@@ -1,14 +1,16 @@
 {
-  "name": "claude-code-local",
+  "name": "claude-oh",
   "version": "999.0.0-local",
   "private": true,
   "type": "module",
   "bin": {
-    "claude-haha": "./bin/claude-haha"
+    "claude-oh": "./bin/claude-oh"
   },
   "scripts": {
-    "claude-haha": "bun run ./bin/claude-haha",
-    "start": "bun run ./bin/claude-haha"
+    "claude-oh": "bun run ./bin/claude-oh",
+    "start": "bun run ./bin/claude-oh",
+    "test": "bun test",
+    "typecheck": "bunx tsc --noEmit"
   },
   "dependencies": {
     "@anthropic-ai/sandbox-runtime": "^0.0.44",
@@ -73,5 +75,9 @@
     "xss": "^1.0.15",
     "yaml": "^2.8.3",
     "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "bun-types": "^1.3.13",
+    "typescript": "^6.0.3"
   }
 }

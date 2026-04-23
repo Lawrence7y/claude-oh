@@ -2,6 +2,8 @@ import { randomUUID } from 'crypto'
 import { queryModelWithStreaming } from '../services/api/claude.js'
 import { autoCompactIfNeeded } from '../services/compact/autoCompact.js'
 import { microcompactMessages } from '../services/compact/microCompact.js'
+import { queryExternalProviderWithStreaming } from '../services/multiCli/externalModel.js'
+import { parseProviderOptions } from '../services/multiCli/providerOptions.js'
 
 // -- deps
 
@@ -31,8 +33,17 @@ export type QueryDeps = {
 }
 
 export function productionDeps(): QueryDeps {
+  const providerOptions = parseProviderOptions(
+    process.argv.slice(2),
+    process.env,
+    process.env.CLAUDE_HAHA_COMMAND_NAME,
+  )
+
   return {
-    callModel: queryModelWithStreaming,
+    callModel:
+      providerOptions.provider === 'anthropic'
+        ? queryModelWithStreaming
+        : queryExternalProviderWithStreaming,
     microcompact: microcompactMessages,
     autocompact: autoCompactIfNeeded,
     uuid: randomUUID,

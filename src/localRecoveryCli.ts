@@ -1,6 +1,14 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { readFileSync } from 'fs'
 import { createInterface } from 'readline'
+import {
+  checkAllProviderAvailability,
+  printProviderDiagnostics,
+} from './services/multiCli/diagnostics.js'
+import { runExternalCliPrompt } from './services/multiCli/externalCliBackend.js'
+import { parseProviderOptions } from './services/multiCli/providerOptions.js'
+import { runAutoAgentTask } from './services/multiCli/taskAllocator.js'
+import { isExternalCliProvider } from './services/multiCli/providerTypes.js'
 
 type OutputFormat = 'text' | 'json'
 
@@ -17,6 +25,9 @@ function printHelp(): void {
       '  (no args)                     Start local interactive mode',
       '  -p, --print                   Send a single prompt and print the result',
       '  --model <model>               Override model',
+      '  --provider <provider>         anthropic, auto, claude, codex, opencode',
+      '  --provider-model <model>      Override external provider model',
+      '  providers                     Show external CLI provider diagnostics',
       '  --system-prompt <text>        Override system prompt',
       '  --system-prompt-file <file>   Read system prompt from file',
       '  --append-system-prompt <text> Append to the system prompt',
@@ -42,6 +53,11 @@ function parseArgs(argv: string[]) {
   let systemPrompt: string | undefined
   let appendSystemPrompt: string | undefined
   let outputFormat: OutputFormat = 'text'
+  const providerOptions = parseProviderOptions(
+    argv,
+    process.env,
+    process.env.CLAUDE_HAHA_COMMAND_NAME ?? 'claude-haha',
+  )
   const positional: string[] = []
 
   for (let i = 0; i < argv.length; i++) {
@@ -53,6 +69,9 @@ function parseArgs(argv: string[]) {
     }
     if (arg === '-v' || arg === '--version' || arg === '-V') {
       return { command: 'version' as const }
+    }
+    if (arg === 'providers') {
+      return { command: 'providers' as const }
     }
     if (arg === '-p' || arg === '--print') {
       print = true
@@ -66,6 +85,10 @@ function parseArgs(argv: string[]) {
     }
     if (arg === '--model') {
       model = argv[++i]
+      continue
+    }
+    if (arg === '--provider' || arg === '--provider-model' || arg === '--agent-providers') {
+      i++
       continue
     }
     if (arg === '--system-prompt') {
@@ -98,6 +121,9 @@ function parseArgs(argv: string[]) {
     command: 'run' as const,
     print,
     model,
+    provider: providerOptions.provider,
+    providerModel: providerOptions.providerModel,
+    agentProviders: providerOptions.agentProviders,
     systemPrompt,
     appendSystemPrompt,
     outputFormat,
@@ -135,6 +161,10 @@ async function run(): Promise<void> {
     printVersion()
     return
   }
+  if (parsed.command === 'providers') {
+    await printProviderDiagnostics(process.cwd())
+    return
+  }
 
   if (!parsed.print) {
     await runInteractive(parsed)
@@ -145,6 +175,11 @@ async function run(): Promise<void> {
   if (!prompt) {
     process.stderr.write('Error: prompt is required\n')
     process.exitCode = 1
+    return
+  }
+
+  if (parsed.provider !== 'anthropic') {
+    await runProviderPrint(parsed, prompt)
     return
   }
 
@@ -197,11 +232,72 @@ async function run(): Promise<void> {
   process.stdout.write(`${text}\n`)
 }
 
+function formatEditProposalNotice(count: number): string {
+  if (count === 0) return ''
+  return `\n\nEdit proposals captured: ${count}. They were not applied automatically.`
+}
+
+async function runProviderPrint(parsed: {
+  provider: 'auto' | 'claude' | 'codex' | 'opencode'
+  providerModel?: string
+  agentProviders: Array<'claude' | 'codex' | 'opencode'>
+  outputFormat: OutputFormat
+}, prompt: string): Promise<void> {
+  if (parsed.provider === 'auto') {
+    const availability = await checkAllProviderAvailability({ cwd: process.cwd() })
+    const result = await runAutoAgentTask({
+      cwd: process.cwd(),
+      prompt,
+      model: parsed.providerModel,
+      allowedProviders: parsed.agentProviders,
+      availability,
+    })
+    const proposalCount = result.results.reduce(
+      (count, item) => count + item.editProposals.length,
+      0,
+    )
+    const text = result.text + formatEditProposalNotice(proposalCount)
+    process.stdout.write(
+      parsed.outputFormat === 'json'
+        ? `${JSON.stringify({ provider: 'auto', result: text }, null, 2)}\n`
+        : `${text}\n`,
+    )
+    return
+  }
+
+  if (!isExternalCliProvider(parsed.provider)) {
+    throw new Error(`Unsupported provider: ${parsed.provider}`)
+  }
+
+  const result = await runExternalCliPrompt({
+    provider: parsed.provider,
+    cwd: process.cwd(),
+    prompt,
+    model: parsed.providerModel,
+  })
+  const text =
+    (result.text || result.errors.join('\n') || 'No output.') +
+    formatEditProposalNotice(result.editProposals.length)
+  process.stdout.write(
+    parsed.outputFormat === 'json'
+      ? `${JSON.stringify({ provider: parsed.provider, result: text }, null, 2)}\n`
+      : `${text}\n`,
+  )
+}
+
 async function runInteractive(parsed: {
   model?: string
+  provider: 'anthropic' | 'auto' | 'claude' | 'codex' | 'opencode'
+  providerModel?: string
+  agentProviders: Array<'claude' | 'codex' | 'opencode'>
   systemPrompt?: string
   appendSystemPrompt?: string
 }): Promise<void> {
+  if (parsed.provider !== 'anthropic') {
+    await runProviderInteractive(parsed)
+    return
+  }
+
   const apiKey = process.env.ANTHROPIC_API_KEY
   const authToken = process.env.ANTHROPIC_AUTH_TOKEN
   if (!apiKey && !authToken) {
@@ -278,6 +374,61 @@ async function runInteractive(parsed: {
     } catch (error) {
       const message =
         error instanceof Error ? error.message : String(error)
+      process.stderr.write(`error: ${message}\n`)
+    }
+    rl.prompt()
+  }
+}
+
+async function runProviderInteractive(parsed: {
+  provider: 'auto' | 'claude' | 'codex' | 'opencode'
+  providerModel?: string
+  agentProviders: Array<'claude' | 'codex' | 'opencode'>
+}): Promise<void> {
+  const rl = createInterface({
+    input: process.stdin,
+    output: process.stdout,
+    prompt: 'claude-oh> ',
+  })
+
+  process.stdout.write(
+    `Claude Oh recovery interactive mode\nprovider: ${parsed.provider}\ncommands: /exit, /clear, /providers\n\n`,
+  )
+  rl.prompt()
+
+  for await (const line of rl) {
+    const input = line.trim()
+    if (!input) {
+      rl.prompt()
+      continue
+    }
+    if (input === '/exit' || input === '/quit') {
+      rl.close()
+      break
+    }
+    if (input === '/clear') {
+      process.stdout.write('history cleared\n')
+      rl.prompt()
+      continue
+    }
+    if (input === '/providers') {
+      await printProviderDiagnostics(process.cwd())
+      rl.prompt()
+      continue
+    }
+
+    try {
+      await runProviderPrint(
+        {
+          provider: parsed.provider,
+          providerModel: parsed.providerModel,
+          agentProviders: parsed.agentProviders,
+          outputFormat: 'text',
+        },
+        input,
+      )
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
       process.stderr.write(`error: ${message}\n`)
     }
     rl.prompt()

@@ -6,6 +6,7 @@
     "allowJs": true,
     "jsx": "react-jsx",
     "baseUrl": ".",
+    "ignoreDeprecations": "6.0",
     "paths": {
       "@ant/claude-for-chrome-mcp": [
         "./stubs/ant-claude-for-chrome-mcp.ts"
